@@ -73,16 +73,25 @@ database.</p>
 <p>Five measured results, none computed from the documentation.</p>
 
 <ol>
-<li><b>A single <code>db.batch()</code> call accepted 128,000 statements</b>,
-128 times the documented 1000-query per-invocation cap, at a flat 0.205 to
-0.280&nbsp;ms per statement across that entire 128-fold range. The documented
-row reads, verbatim, &ldquo;Queries per Worker invocation (read subrequest
+<li><b>A single <code>db.batch()</code> call accepted 150,000 statements</b>,
+150 times the documented 1000-query per-invocation cap. The documented row
+reads, verbatim, &ldquo;Queries per Worker invocation (read subrequest
 limits)&rdquo;, and the parenthetical is routinely dropped when the number is
 quoted. The page states that per-query limits apply to each statement inside a
 batch, giving statement <em>length</em> as its example, but never says how the
-query <em>count</em> is charged. The documentation therefore leaves the
-question open while inviting the stricter reading; the measurement settles it,
-and a batch is one.</li>
+query <em>count</em> is charged. The documentation leaves that open; the
+measurement settles it, and a batch is one.</li>
+
+<li><b>The limit that does bind is the 30-second duration cap on the entire
+batch call</b>, exactly as the documentation's own footnote 4 states. 150,000
+statements succeeded in 25.8&nbsp;seconds; 175,000 were refused. So the
+maximum statements per batch is <b>a time budget, not a count</b>: thirty
+seconds divided by the per-statement cost, which moves with row width. A
+number copied from these tables into code handling wider rows will be wrong.
+Past the boundary the same request produced two distinct failures with
+different error text, and whether either can leave data behind is recorded as
+unresolved rather than claimed, because the measurement that would settle it
+was not performed.</li>
 
 <li><b>The bound-parameter ceiling is exactly <code>floor(100/C)</code></b>,
 confirmed by climbing until D1 answers <code>too many SQL variables</code> at

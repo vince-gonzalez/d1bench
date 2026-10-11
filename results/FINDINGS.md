@@ -56,41 +56,89 @@ runs, 260,487 present in the table. Exact. Every statement executed.
 So one `batch()` call behaves as **one query** against the per-invocation cap.
 Chunking statements to stay under 1000 is solving a problem that is not there.
 
-### What the documentation actually says, quoted
+### What the documentation says, quoted in full
 
-The relevant row is not phrased the way it is usually quoted. Verbatim:
+Two passages govern this, and they have to be read together. The limits row:
 
 > **Queries per Worker invocation (read subrequest limits)**: 1000 (Workers
 > Paid) / 50 (Free)
 
-The parenthetical is the hint, and it is routinely dropped when the number is
-repeated. The page then says:
+A note beneath the table:
 
 > Limits for individual queries (listed above) apply to each individual
-> statement contained within a batch statement.
+> statement contained within a batch statement. For example, the maximum SQL
+> statement length of 100 KB applies to each statement inside a `db.batch()`.
 
-with statement length given as the example. **What the page does not say is
-how a `batch()` counts against the query-count row** — one query, or one per
-statement. That is the ambiguity, and the sentence above invites the stricter
-reading. The measurement resolves it: a batch is one.
+And footnote 4, attached to the duration row:
 
-### A correction to an earlier draft of this document
+> Requests to Cloudflare API must resolve in 30 seconds. Therefore, this
+> duration limit also applies to the entire batch call.
 
-An earlier draft noted that the 128,000-statement call ran 30,208 ms, past
-the documented 30-second **Maximum SQL query duration**, and treated that as
-a second unenforced limit. That was wrong, and wrong by the same misreading
-this finding is about.
+So the documentation is explicit that the 30-second duration limit covers the
+whole batch, and explicit that per-statement limits apply per statement. What
+it never states is how the query **count** is charged inside a batch. That is
+the open question, and the measurement answers it: a batch is one.
 
-The duration limit applies **per statement**, exactly as the quoted sentence
-says. Each statement here took about 0.236 ms, so no statement came close to
-30 seconds and nothing was violated. A batch whose *total* wall time exceeds
-30 seconds does not breach a per-statement cap.
+### The ceiling is a time budget, not a statement count
 
-So there is **no finding about the 30-second limit**, in either direction. It
-was never approached. Where a genuinely long single statement gets refused is
-a different experiment and was not run.
+Pushed past 128,000 deliberately, to find where refusal begins:
 
----
+| statements | result |
+|---|---|
+| 128,000 | 30,208 ms, succeeded |
+| 150,000 | 25,802 ms, succeeded |
+| 175,000 | **refused** |
+| 200,000 | **refused** |
+
+So the binding limit is the 30-second cap on the entire batch call, exactly as
+footnote 4 says, and it lands between 150,000 and 175,000 statements at this
+row shape.
+
+The practical consequence is the useful part: **the maximum statements per
+batch is not a constant.** It is 30 seconds divided by your per-statement
+cost, so it moves with row width and value size. A number copied from this
+table into code with wider rows will be wrong.
+
+### Two failure modes past the boundary, and durability is not readable from the error
+
+The refusals did not come back the same way. Two runs of the same
+200,000-statement request produced:
+
+```
+D1_ERROR: D1 DB storage operation exceeded timeout which caused object to be reset.
+D1_ERROR: D1 DB exceeded its CPU time limit and was reset.
+```
+
+One run was executed with a verified before-count of zero rows. It returned
+the CPU-time error and left **zero rows**: a clean rollback.
+
+A separate earlier run reported the storage-timeout error, and the table was
+found holding exactly 200,000 rows afterwards. **No before-count was taken on
+that run**, so it is recorded here as unexplained rather than as evidence that
+a timed-out batch can commit. The claim is not made, because the measurement
+that would support it was not performed.
+
+What is established: past the boundary, the same request produces more than
+one distinct failure, and the error text differs between them. What is not
+established is whether either failure can leave data behind. Anyone relying on
+batch atomicity near the duration limit should test it on their own data
+rather than take this table's word for it.
+
+### A correction, twice over
+
+This document previously said the 30-second cap "is not strictly enforced"
+because a 128,000-statement call ran 30,208 ms and succeeded. A later revision
+replaced that with the opposite claim, that the cap applies only per statement
+so nothing had been violated.
+
+Both were wrong. The first read 0.7% past a boundary as evidence of
+non-enforcement, which is thinner than the uncertainty in where two different
+clocks start and stop. The second missed footnote 4, which states plainly that
+the limit does apply to the entire batch call.
+
+The cap is enforced, on the whole call, and the boundary is now measured. The
+error was not in the data either time. It was in reading the documentation
+before quoting it, which is the same failure this finding is about.
 
 ## Finding 2 — the parameter ceiling is exactly `floor(100 / C)`, and it reaches 1
 
@@ -229,11 +277,13 @@ That is the whole result in one line, and everything above is a consequence:
 - **No indexes on any table.** Index maintenance is real write cost,
   excluded deliberately to isolate the variable. A table with three indexes
   will not match these absolute numbers.
-- **Nothing here tests the 30-second duration cap.** It applies per
-  statement, and every statement measured took well under a millisecond, so
-  the cap was never approached. An earlier draft of this document claimed the
-  cap went unenforced because a whole batch ran 30,208 ms; that conflated a
-  per-statement limit with a per-call total and has been removed.
+- **The duration boundary is bracketed, not pinpointed.** 150,000
+  statements succeeded and 175,000 were refused; the exact crossing was not
+  bisected, and it would move with row shape in any case.
+- **Batch atomicity near the boundary is unresolved.** One refusal rolled
+  back cleanly from a verified empty table. A separate refusal with a
+  different error text was followed by a full table, but no before-count was
+  taken, so nothing is concluded from it.
 - **Values contained no characters needing escaping.** Escaping cost scales
   with quote density, which is a separate sweep and was not run. This matters
   only for `literal`, and it is the one axis where the untested direction

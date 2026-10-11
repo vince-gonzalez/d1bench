@@ -1,5 +1,22 @@
 # Finding 1 — `db.batch()` is not bound by "queries per Worker invocation"
 
+> **SUPERSEDED 2026-10-11 by [`FINDINGS.md`](FINDINGS.md).** This file is the
+> first probe and is kept for the record. Two of its statements are now known
+> to be wrong and are corrected there:
+>
+> - It treated the 30-second duration cap as possibly unenforced because a
+>   128,000-statement call ran 30,208 ms and succeeded. **The cap is enforced,
+>   on the entire batch call**, exactly as the documentation's footnote 4
+>   states. Measured: 150,000 statements succeed in 25.8 s, 175,000 are
+>   refused.
+> - It therefore described the ceiling as unlocated. It is a **time budget** -
+>   thirty seconds divided by the per-statement cost - so there is no single
+>   statement count to locate, and the figure moves with row width.
+>
+> What stands from this file: the query-count limit is not charged per
+> statement inside a batch, per-statement cost is flat across the range, and
+> the row reconciliation (260,487 expected, 260,487 present).
+
 Measured 2026-10-10 against a live D1 instance (`f-keys-d1bench`, region ENAM)
 from inside a deployed Worker. Harness: `f-keys/d1bench`, version `d5bb2ca7`.
 

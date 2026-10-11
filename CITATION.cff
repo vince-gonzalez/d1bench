@@ -16,10 +16,16 @@ abstract: >-
   under test only exist inside a Worker invocation, and sweeps three write
   strategies across column count and row size against a live database.
 
-  Five measured results. A single `db.batch()` call accepted 128,000
-  statements, 128 times the documented 1000-query per-invocation cap, at a flat
-  0.205 to 0.280 ms per statement across that entire range, with row counts
-  reconciled exactly against statements sent. The bound-parameter ceiling is
+  Five measured results. A single db.batch() call accepted 150,000 statements,
+  150 times the documented 1000-query per-invocation cap, with row counts
+  reconciled exactly against statements sent. The query-count limit is
+  therefore not charged per statement inside a batch. The limit that does bind
+  is the 30-second duration cap applied to the entire batch call, exactly as
+  the documentation's own footnote states: 150,000 statements succeeded in
+  25.8 seconds and 175,000 were refused. The practical ceiling is therefore a
+  time budget rather than a statement count, moving with row width, and a
+  number copied from these tables into code handling wider rows will be
+  wrong. The bound-parameter ceiling is
   exactly floor(100/C), confirmed by climbing until D1 answers "too many SQL
   variables" at every column count, which means that at 51 or more columns
   chunked bound parameters has silently become one statement per row. Literal
