@@ -1,0 +1,55 @@
+cff-version: 1.2.0
+title: "d1bench: which Cloudflare D1 write strategy wins, and which limit stops you first"
+message: "If you use this software or its measurements, please cite it using these metadata."
+type: software
+authors:
+  - given-names: Vincent
+    family-names: Gonzalez
+    orcid: "https://orcid.org/0009-0005-3640-014X"
+    email: vincegonzalez@me.com
+repository-code: "https://github.com/vince-gonzalez/d1bench"
+license: MIT
+abstract: >-
+  Cloudflare documents D1's limits one at a time. It does not document how they
+  interact, and they interact in a way that changes which bulk-insert strategy
+  is correct. This harness deploys inside a Worker, because two of the limits
+  under test only exist inside a Worker invocation, and sweeps three write
+  strategies across column count and row size against a live database.
+
+  Five measured results. A single `db.batch()` call accepted 128,000
+  statements, 128 times the documented 1000-query per-invocation cap, at a flat
+  0.205 to 0.280 ms per statement across that entire range, with row counts
+  reconciled exactly against statements sent. The bound-parameter ceiling is
+  exactly floor(100/C), confirmed by climbing until D1 answers "too many SQL
+  variables" at every column count, which means that at 51 or more columns
+  chunked bound parameters has silently become one statement per row. Literal
+  SQL is 2.7 times faster at 64 columns. On the row-size axis it reverses and
+  ends in a wall: past roughly 131 KB of row a single literal tuple exceeds the
+  100,000-byte statement limit and literal SQL is refused outright rather than
+  merely slower. The result those four are consequences of is that the two
+  strategies are capped by orthogonal limits, bound parameters binding on
+  column count and invariant to row size, literal binding on row size and
+  invariant to column count.
+
+  A methodological note is included because it changes how any Workers
+  benchmark should be read. In Workers, Date.now() advances only on I/O and is
+  frozen across pure computation, so a clock inside the Worker cannot observe
+  the CPU spent building a statement, and literal SQL is the strategy doing
+  that work. Every run is therefore timed from inside and outside. Measured
+  outside overhead was 84 to 98 ms and identical between strategies at every
+  column count, establishing that the invisible CPU did not produce the
+  reported gap.
+
+  Limitations are stated rather than implied: one region, one database, one
+  account, one day, no indexes, and no sweep of escaping cost. The ratios and
+  the orthogonality are the claims; the absolute timings are evidence for them.
+
+keywords:
+  - Cloudflare D1
+  - Cloudflare Workers
+  - SQLite
+  - database benchmark
+  - bulk insert
+  - bound parameters
+  - serverless
+  - reproducible measurement
