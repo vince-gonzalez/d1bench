@@ -24,121 +24,128 @@ is not — and that is the only part a developer actually has to decide.
 
 ---
 
-## Finding 1 — `batch()` is not bound by "queries per Worker invocation"
+## Finding 1 — the documented 1,000 is exact, and a `batch()` counts as one
 
-The documented cap is **1000 queries per Worker invocation** (50 on free), and
-the advice that follows it is to chunk a bulk insert so the statement count
-stays under it. Whether that cap is charged per statement inside a `batch()`
-is left open by the documentation — see the quotations below — and the open
-question is why the cautious reading spread.
+### The documented limit is correct, and enforced to the query
 
-A single `batch()` call accepted far more:
+The row on D1's limits page reads:
 
-| statements in one `batch()` | D1 time | per statement |
+> **Queries per Worker invocation (read [subrequest limits](...))**: 1000
+> (Workers Paid) / 50 (Free)
+
+Tested directly, with **one fresh Worker invocation per rung** and the
+cheapest possible statement (`SELECT 1`) so that a count limit would bite
+before any duration limit:
+
+| queries requested | completed | result |
 |---|---|---|
-| 1,000 | 280 ms | 0.280 ms |
-| 2,000 | 439 ms | 0.220 ms |
-| 4,000 | 844 ms | 0.211 ms |
-| 8,000 | 1,701 ms | 0.213 ms |
-| 16,000 | 3,831 ms | 0.239 ms |
-| 32,000 | 6,563 ms | 0.205 ms |
-| 64,000 | 14,893 ms | 0.233 ms |
-| 128,000 | 30,208 ms | 0.236 ms |
+| 900 | 900 | ok |
+| 999 | 999 | ok |
+| 1,000 | 1,000 | ok |
+| 1,001 | **1,000** | refused |
+| 1,100 | **1,000** | refused |
+| 2,000 | **1,000** | refused |
 
-No refusal at any rung. **128,000 statements is 128x the documented cap**, and
-per-statement cost is flat from 0.205 to 0.280 ms across that entire 128-fold
-range — the relationship is linear with a small intercept.
+The refusal names itself:
 
-**The check that makes this a finding and not a fast no-op.** Row counts were
-reconciled against every statement sent: 260,487 expected across three probe
-runs, 260,487 present in the table. Exact. Every statement executed.
+```
+Too many API requests by single Worker invocation.
+```
 
-So one `batch()` call behaves as **one query** against the per-invocation cap.
-Chunking statements to stay under 1000 is solving a problem that is not there.
+So the documented figure is not approximate and not stale. It is exactly
+1,000, it is enforced on the 1,001st query, and the first 1,000 complete. The
+unit the error names is an **API request**.
 
-### What the documentation says, quoted in full
+### What the documentation does not say
 
-Two passages govern this, and they have to be read together. The limits row:
+Nothing on the [limits page](https://developers.cloudflare.com/d1/platform/limits/)
+or the [`batch()` API page](https://developers.cloudflare.com/d1/worker-api/d1-database/)
+states how a `db.batch()` is counted against that budget: one API request, or
+one per statement contained in it. The limits page does say that per-query
+limits apply per statement inside a batch, giving statement length as its
+example, which invites the stricter reading for the count as well.
 
-> **Queries per Worker invocation (read subrequest limits)**: 1000 (Workers
-> Paid) / 50 (Free)
+Measured, in the same shape of invocation, both just above the documented
+budget:
 
-A note beneath the table:
+| form | result |
+|---|---|
+| 2,000 queries, one at a time | **refused** after exactly 1,000 |
+| 2,000 statements in one `batch()` | **ok**, 421 ms |
 
-> Limits for individual queries (listed above) apply to each individual
-> statement contained within a batch statement. For example, the maximum SQL
-> statement length of 100 KB applies to each statement inside a `db.batch()`.
+A single `batch()` therefore costs **one** API request, not one per statement.
+Pushed much further, a single call carried **150,000 statements** — 150 times
+the per-invocation budget — and completed.
 
-And footnote 4, attached to the duration row:
+That is the whole finding, and it is the practical one: the common advice to
+chunk a bulk insert so the statement count stays under 1,000 is solving a
+problem that does not exist. The budget constrains how many **times you call
+D1**, not how much SQL you hand it per call.
 
-> Requests to Cloudflare API must resolve in 30 seconds. Therefore, this
-> duration limit also applies to the entire batch call.
+### Where a large batch does stop, stated without a mechanism
 
-So the documentation is explicit that the 30-second duration limit covers the
-whole batch, and explicit that per-statement limits apply per statement. What
-it never states is how the query **count** is charged inside a batch. That is
-the open question, and the measurement answers it: a batch is one.
+Pushed deliberately past the point of success:
 
-### The ceiling is a time budget, not a statement count
-
-Pushed past 128,000 deliberately, to find where refusal begins:
-
-| statements | result |
+| statements in one `batch()` | result |
 |---|---|
 | 128,000 | 30,208 ms, succeeded |
 | 150,000 | 25,802 ms, succeeded |
-| 175,000 | **refused** |
-| 200,000 | **refused** |
+| 175,000 | refused |
+| 200,000 | refused |
 
-So the binding limit is the 30-second cap on the entire batch call, exactly as
-footnote 4 says, and it lands between 150,000 and 175,000 statements at this
-row shape.
-
-The practical consequence is the useful part: **the maximum statements per
-batch is not a constant.** It is 30 seconds divided by your per-statement
-cost, so it moves with row width and value size. A number copied from this
-table into code with wider rows will be wrong.
-
-### Two failure modes past the boundary, and durability is not readable from the error
-
-The refusals did not come back the same way. Two runs of the same
-200,000-statement request produced:
+So refusal begins between 150,000 and 175,000 statements at this row shape.
+**Which limit produces it is deliberately not claimed here.** At least three
+plausible ceilings sit within range of each other — the documented 30-second
+maximum SQL query duration, which footnote 4 extends to the entire batch call;
+the Workers Paid CPU default of 30 seconds; and D1's own internal CPU limit —
+and the two refusals came back with different text:
 
 ```
 D1_ERROR: D1 DB storage operation exceeded timeout which caused object to be reset.
 D1_ERROR: D1 DB exceeded its CPU time limit and was reset.
 ```
 
-One run was executed with a verified before-count of zero rows. It returned
-the CPU-time error and left **zero rows**: a clean rollback.
+Naming one of those limits as the cause would require isolating it, and that
+experiment was not run. What is safe to take away is the shape rather than the
+number: the ceiling on a single batch is a **budget of time, not of
+statements**, so it moves with row width and value size. A statement count
+copied out of this table into code handling wider rows will be wrong.
 
-A separate earlier run reported the storage-timeout error, and the table was
-found holding exactly 200,000 rows afterwards. **No before-count was taken on
-that run**, so it is recorded here as unexplained rather than as evidence that
-a timed-out batch can commit. The claim is not made, because the measurement
-that would support it was not performed.
+### Atomicity at the boundary
 
-What is established: past the boundary, the same request produces more than
-one distinct failure, and the error text differs between them. What is not
-established is whether either failure can leave data behind. Anyone relying on
-batch atomicity near the duration limit should test it on their own data
-rather than take this table's word for it.
+The `batch()` documentation states that batched statements are SQL
+transactions and that a failure "aborts or rolls back the entire sequence."
+One refusal was executed with a verified before-count of zero rows: it
+returned the CPU-time error and left **zero rows**, matching the documented
+guarantee.
 
-### A correction, twice over
+A separate earlier refusal returned the storage-timeout error, and the table
+was afterwards found holding exactly 200,000 rows. **No before-count was taken
+on that run**, so it is recorded as unexplained and no claim is made from it.
 
-This document previously said the 30-second cap "is not strictly enforced"
-because a 128,000-statement call ran 30,208 ms and succeeded. A later revision
-replaced that with the opposite claim, that the cap applies only per statement
-so nothing had been violated.
+### Corrections, and what caused them
 
-Both were wrong. The first read 0.7% past a boundary as evidence of
-non-enforcement, which is thinner than the uncertainty in where two different
-clocks start and stop. The second missed footnote 4, which states plainly that
-the limit does apply to the entire batch call.
+This finding was stated wrongly three times before it was stated correctly,
+and every error came from quoting the documentation instead of reading it.
 
-The cap is enforced, on the whole call, and the boundary is now measured. The
-error was not in the data either time. It was in reading the documentation
-before quoting it, which is the same failure this finding is about.
+1. First draft: *"the 30-second cap is not strictly enforced"*, from a
+   128,000-statement call that ran 30,208 ms. That read 0.7% past a boundary
+   as evidence, which is thinner than the uncertainty in where two different
+   clocks start and stop.
+2. Second: *"the cap applies only per statement, so nothing was violated."*
+   That missed footnote 4, which says plainly that the duration limit applies
+   to the entire batch call.
+3. Third: the claim that the parenthetical *"(read subrequest limits)"* is a
+   dropped hint about reads versus writes. It is not. It is an imperative verb
+   attached to a hyperlink — *read* the subrequest limits page — and reading it
+   as a kind of limit was an error. That page also shows the general Workers
+   subrequest budget on Paid defaulting to 10,000 rather than 1,000, which
+   looked like an inconsistency until the direct test showed D1 enforcing
+   exactly 1,000. The D1 page is right.
+
+The data never changed. Only the reading did, and the version that survives
+confirms Cloudflare's own number exactly while isolating the single fact their
+pages do not state.
 
 ## Finding 2 — the parameter ceiling is exactly `floor(100 / C)`, and it reaches 1
 

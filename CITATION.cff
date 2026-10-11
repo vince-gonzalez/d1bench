@@ -16,16 +16,21 @@ abstract: >-
   under test only exist inside a Worker invocation, and sweeps three write
   strategies across column count and row size against a live database.
 
-  Five measured results. A single db.batch() call accepted 150,000 statements,
-  150 times the documented 1000-query per-invocation cap, with row counts
-  reconciled exactly against statements sent. The query-count limit is
-  therefore not charged per statement inside a batch. The limit that does bind
-  is the 30-second duration cap applied to the entire batch call, exactly as
-  the documentation's own footnote states: 150,000 statements succeeded in
-  25.8 seconds and 175,000 were refused. The practical ceiling is therefore a
-  time budget rather than a statement count, moving with row width, and a
-  number copied from these tables into code handling wider rows will be
-  wrong. The bound-parameter ceiling is
+  Five measured results. The documented limit of 1,000 queries per Worker
+  invocation is exact and enforced: 1,000 succeed and the 1,001st is refused
+  with "Too many API requests by single Worker invocation", verified with one
+  fresh invocation per rung. What the documentation does not state is how a
+  db.batch() is counted against that budget. Measured in the same invocation
+  shape and both above it, 2,000 queries issued one at a time are refused
+  after exactly 1,000 while 2,000 statements inside a single batch() complete
+  in 421 ms, and one call carried 150,000 statements. A batch therefore costs
+  one API request rather than one per statement, so the common advice to chunk
+  a bulk insert under 1,000 statements addresses a limit that does not apply.
+  Refusal of a single large batch begins between 150,000 and 175,000
+  statements; which of three candidate 30-second ceilings causes it is not
+  claimed, because that was not isolated, so the practical ceiling is reported
+  as a budget of time rather than a count, moving with row width.
+  The bound-parameter ceiling is
   exactly floor(100/C), confirmed by climbing until D1 answers "too many SQL
   variables" at every column count, which means that at 51 or more columns
   chunked bound parameters has silently become one statement per row. Literal

@@ -25,8 +25,9 @@ correct.
 
 | | |
 |---|---|
-| `batch()` is not charged per statement | 150,000 statements in a single call, 150x the documented per-invocation cap, at a flat 0.17–0.28 ms each |
-| The real ceiling is a **time budget** | The 30-second cap applies to the whole batch, as the docs' own footnote says. 150,000 succeeded at 25.8 s, 175,000 was refused. So the maximum is 30 s divided by your per-statement cost, not a constant. |
+| The documented 1,000-query limit is **exact** | 1,000 queries per invocation succeed; the 1,001st is refused with `Too many API requests by single Worker invocation`. Verified one fresh invocation per rung. |
+| A `batch()` costs **one** API request, not one per statement | Same invocation shape, both above the budget: 2,000 queries one at a time are refused after exactly 1,000; 2,000 statements in one `batch()` complete in 421 ms. A single call carried 150,000. |
+| So the ceiling on one batch is a **time budget** | 150,000 statements succeeded, 175,000 were refused. Which of three candidate 30-second limits causes it is **not** claimed - it was not isolated. The figure moves with row width. |
 | The parameter ceiling is exactly `floor(100/C)` | Confirmed by climbing until D1 answers `too many SQL variables`, at every column count |
 | Chunked bound parameters stops being batching | At 51+ columns the ceiling is 1 row per statement, which is the naive strategy under another name |
 | Literal SQL is 2.7x faster at 64 columns | 187 ms against 503 ms, because it still carries 77 rows per statement where bound parameters carry one |

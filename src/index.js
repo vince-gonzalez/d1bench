@@ -326,6 +326,59 @@ function sameToken(a, b) {
   return d === 0;
 }
 
+
+/* Does the documented "Queries per Worker invocation: 1000" bite?
+
+   THIS IS THE EXPERIMENT THAT SEPARATES TWO CLAIMS, and without it the
+   batch result is ambiguous. A batch carrying 150,000 statements
+   succeeding tells you statements-inside-a-batch are not each charged.
+   It tells you NOTHING about the documented per-invocation number
+   itself, because a batch might simply be one charge.
+
+   So this issues k SEPARATE queries in one invocation, each its own
+   round trip, and climbs until refusal. If it refuses near 1000 the
+   documented D1 figure is in force. If it goes far past, the figure on
+   the D1 page does not describe this account.
+
+   SELECT 1 on purpose: the cheapest statement available, so the COUNT
+   limit has the best possible chance of biting before any duration or
+   CPU limit does. A heavy query would conflate the two, and conflating
+   them is how you report the wrong limit. */
+async function probeSequential(env, count) {
+  /* ONE RUNG PER INVOCATION, and this was a bug before it was a design.
+     The first version walked a ladder inside a single handler call, so
+     the counts accumulated: 100 then 500 then 999 was really 100, 600,
+     1599 against a per-INVOCATION budget. It bracketed the limit at
+     600-1599 and could not pinpoint it, while reporting the rung
+     numbers as if each stood alone.
+
+     So the ladder now lives in the caller. Each HTTP request to this
+     route is a fresh invocation with a fresh budget, and `count` is the
+     only number that matters.
+
+     The error text is the discriminator, not the elapsed time. At
+     roughly 25 ms per round trip, 1,200 sequential queries is already
+     near 30 seconds, so a count limit and a duration limit sit close
+     together here. "Too many API requests by single Worker invocation"
+     names the count limit explicitly and cannot be confused with a
+     timeout, which is why it is reported verbatim. */
+  const n = Math.max(1, Math.min(20000, Number(count) || 1));
+  const t0 = Date.now();
+  let done = 0;
+  try {
+    for (let i = 0; i < n; i++) {
+      await env.DB.prepare('SELECT 1 AS n').first();
+      done = i + 1;
+    }
+    return { requested: n, completed: done, ok: true,
+             d1_ms: Date.now() - t0, error: null };
+  } catch (e) {
+    return { requested: n, completed: done, ok: false,
+             d1_ms: Date.now() - t0,
+             error: String((e && e.message) || e).slice(0, 300) };
+  }
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -376,6 +429,10 @@ export default {
       if (p === '/probe/batch' && request.method === 'POST') {
         const b = await request.json();
         return json(await probeBatch(env, b.columns ?? 4, b.ladder));
+      }
+      if (p === '/probe/sequential' && request.method === 'POST') {
+        const b = await request.json();
+        return json(await probeSequential(env, b.count));
       }
       if (p === '/probe/stmtbytes' && request.method === 'POST') {
         const b = await request.json();

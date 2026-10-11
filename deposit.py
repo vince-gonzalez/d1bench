@@ -73,25 +73,29 @@ database.</p>
 <p>Five measured results, none computed from the documentation.</p>
 
 <ol>
-<li><b>A single <code>db.batch()</code> call accepted 150,000 statements</b>,
-150 times the documented 1000-query per-invocation cap. The documented row
-reads, verbatim, &ldquo;Queries per Worker invocation (read subrequest
-limits)&rdquo;, and the parenthetical is routinely dropped when the number is
-quoted. The page states that per-query limits apply to each statement inside a
-batch, giving statement <em>length</em> as its example, but never says how the
-query <em>count</em> is charged. The documentation leaves that open; the
-measurement settles it, and a batch is one.</li>
+<li><b>The documented limit of 1,000 queries per Worker invocation is exact
+and enforced.</b> Tested with one fresh invocation per rung and the cheapest
+possible statement, 1,000 queries succeed and the 1,001st is refused with
+<code>Too many API requests by single Worker invocation</code>, the first
+1,000 having completed.</li>
 
-<li><b>The limit that does bind is the 30-second duration cap on the entire
-batch call</b>, exactly as the documentation's own footnote 4 states. 150,000
-statements succeeded in 25.8&nbsp;seconds; 175,000 were refused. So the
-maximum statements per batch is <b>a time budget, not a count</b>: thirty
-seconds divided by the per-statement cost, which moves with row width. A
-number copied from these tables into code handling wider rows will be wrong.
-Past the boundary the same request produced two distinct failures with
-different error text, and whether either can leave data behind is recorded as
-unresolved rather than claimed, because the measurement that would settle it
-was not performed.</li>
+<li><b>What the documentation does not state is how a <code>db.batch()</code>
+is counted against that budget.</b> Measured in the same invocation shape and
+both above it: 2,000 queries issued one at a time are refused after exactly
+1,000, while 2,000 statements inside a single <code>batch()</code> complete in
+421&nbsp;ms. A single call carried 150,000 statements. A batch therefore costs
+<b>one</b> API request rather than one per statement, so the common advice to
+chunk a bulk insert under 1,000 statements addresses a limit that does not
+apply to it. The budget constrains how many times you call D1, not how much
+SQL you hand it per call.</li>
+
+<li><b>The ceiling on a single batch is a budget of time, not of
+statements.</b> 150,000 statements succeeded and 175,000 were refused.
+<em>Which</em> limit produces that is deliberately not claimed: at least three
+candidate 30-second ceilings sit within range of one another, and the two
+refusals returned different error text. Isolating the cause was not attempted,
+so the result is reported as a shape rather than a number, and it moves with
+row width.</li>
 
 <li><b>The bound-parameter ceiling is exactly <code>floor(100/C)</code></b>,
 confirmed by climbing until D1 answers <code>too many SQL variables</code> at
