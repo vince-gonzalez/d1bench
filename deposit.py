@@ -36,7 +36,7 @@ if not TOKEN:
     sys.exit("ZENODO_TOKEN is not set")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TAG = "v0.2.0"
+TAG = "v0.3.1"
 ARCHIVE = os.path.join(HERE, "d1bench-%s.zip" % TAG)
 PUBLISH = "--publish" in sys.argv
 
